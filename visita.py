@@ -199,7 +199,7 @@ with tab_comp:
             return ''
             
         st.dataframe(
-            df_comp.style.applymap(color_variacion, subset=['Crecimiento / Caída'])
+            df_comp.style.map(color_variacion, subset=['Crecimiento / Caída'])
             .format({df_comp.columns[1]: "{:.0f}", df_comp.columns[2]: "{:.0f}", 'Crecimiento / Caída': "{:+.0f}"}),
             use_container_width=True, hide_index=True
         )
