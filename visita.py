@@ -134,7 +134,7 @@ st.markdown("---")
 
 # --- 5. ANÁLISIS TEMPORAL ---
 st.markdown("### 📈 Evolución Temporal de Visitas")
-tab_sem, tab_dia = st.tabs(["📊 Acumulado por Semana", "📅 Fluctuación Diaria"])
+tab_sem, tab_obj_sem, tab_dia = st.tabs(["📊 Acumulado por Semana", "🎯 Objetivo por Semana", "📅 Fluctuación Diaria"])
 
 with tab_sem:
     visitas_semana = df_valido.groupby(['SEMANA_SORT_KEY', 'SEMANA_LABEL']).size().reset_index(name='Visitas')
@@ -143,15 +143,33 @@ with tab_sem:
         title="Volumen de Visitas por Semana Exacta del Mes",
         color_discrete_sequence=['#1f77b4']
     )
-    # AJUSTE: Etiquetas más grandes y en negrita
     fig_semana.update_traces(
         textposition='outside',
         textfont=dict(size=16, color='black'),
         texttemplate='<b>%{text}</b>'
     )
-    # Aumentar ligeramente el margen superior para que no se corte el número
     fig_semana.update_layout(margin=dict(t=50))
     st.plotly_chart(fig_semana, use_container_width=True)
+
+with tab_obj_sem:
+    visitas_obj_semana = df_valido.groupby(['SEMANA_SORT_KEY', 'SEMANA_LABEL', 'OBJETIVO_VISITA']).size().reset_index(name='Visitas')
+    visitas_obj_semana = visitas_obj_semana.sort_values('SEMANA_SORT_KEY')
+    fig_obj_sem = px.bar(
+        visitas_obj_semana, 
+        x='SEMANA_LABEL', 
+        y='Visitas', 
+        color='OBJETIVO_VISITA', 
+        barmode='group',
+        text='Visitas',
+        title="Volumen de Visitas por Objetivo y Semana",
+        color_discrete_sequence=px.colors.qualitative.Pastel
+    )
+    fig_obj_sem.update_traces(
+        textposition='outside',
+        textfont=dict(size=12, color='black')
+    )
+    fig_obj_sem.update_layout(margin=dict(t=50), xaxis_title="", legend_title_text="Objetivo")
+    st.plotly_chart(fig_obj_sem, use_container_width=True)
 
 with tab_dia:
     visitas_dia = df_valido.groupby(df_valido['FECHA DE VISITA'].dt.date).size().reset_index(name='Visitas')
@@ -165,11 +183,11 @@ with tab_dia:
 
 st.markdown("---")
 
-# --- 6. DESEMPEÑO POR GESTOR (CON 2 VISTAS) ---
+# --- 6. DESEMPEÑO POR GESTOR (CON 3 VISTAS) ---
 st.markdown("### 🏆 Desempeño y Productividad por Gestor")
-st.markdown("Selecciona si deseas comparar las últimas dos semanas registradas, o si prefieres ver el historial completo (semana a semana).")
+st.markdown("Selecciona si deseas comparar las últimas dos semanas registradas, ver el historial completo o desglosarlo por objetivo.")
 
-tab_comp, tab_hist = st.tabs(["⚖️ Comparativa: Últimas 2 Semanas", "📅 Historial Completo (Venta por Semana)"])
+tab_comp, tab_hist, tab_obj_gest = st.tabs(["⚖️ Comparativa: Últimas 2 Semanas", "📅 Historial Completo", "🎯 Desglose Semanal por Objetivo"])
 
 semanas_ordenadas = sorted(df_valido['SEMANA_SORT_KEY'].unique())
 dict_map = df_valido[['SEMANA_LABEL', 'SEMANA_SORT_KEY']].drop_duplicates().set_index('SEMANA_LABEL')['SEMANA_SORT_KEY'].to_dict()
@@ -191,16 +209,27 @@ with tab_comp:
         
         df_comp['Variación'] = df_comp['Visitas_Ult'] - df_comp['Visitas_Pen']
         
-        df_comp.columns = ['Gestor', f'Semana 1: {lbl_pen}', f'Semana 2: {lbl_ult}', 'Crecimiento / Caída']
+        col_penultima = f'Semana 1: {lbl_pen}'
+        df_comp.columns = ['Gestor', col_penultima, f'Semana 2: {lbl_ult}', 'Crecimiento / Caída']
+        
+        promedio_penultima = df_comp[col_penultima].mean()
+        
+        st.info(f"El promedio de visitas en la **{col_penultima}** fue de **{promedio_penultima:.1f}** visitas por gestor. Los gestores por debajo de este promedio están resaltados en rojo suave.")
         
         def color_variacion(val):
             if isinstance(val, (int, float)):
                 return f"color: {'#2ecc71' if val > 0 else ('#e74c3c' if val < 0 else '#95a5a6')}; font-weight: bold"
             return ''
             
+        def highlight_below_avg(val):
+            if isinstance(val, (int, float)) and val < promedio_penultima:
+                return 'background-color: #ffcccc; color: #900000;'
+            return ''
+            
         st.dataframe(
             df_comp.style.map(color_variacion, subset=['Crecimiento / Caída'])
-            .format({df_comp.columns[1]: "{:.0f}", df_comp.columns[2]: "{:.0f}", 'Crecimiento / Caída': "{:+.0f}"}),
+                         .map(highlight_below_avg, subset=[col_penultima])
+                         .format({df_comp.columns[1]: "{:.0f}", df_comp.columns[2]: "{:.0f}", 'Crecimiento / Caída': "{:+.0f}"}),
             use_container_width=True, hide_index=True
         )
     else:
@@ -221,6 +250,21 @@ with tab_hist:
         use_container_width=True
     )
 
+with tab_obj_gest:
+    pivot_obj = pd.pivot_table(
+        df_valido, values='DURACION_MINUTOS', index=['GESTOR', 'OBJETIVO_VISITA'], 
+        columns='SEMANA_LABEL', aggfunc='count', fill_value=0
+    )
+    
+    cols_ordenadas_obj = sorted(pivot_obj.columns, key=lambda x: dict_map[x] if x in dict_map else "")
+    pivot_obj = pivot_obj[cols_ordenadas_obj]
+    pivot_obj['Total General'] = pivot_obj.sum(axis=1)
+    
+    st.dataframe(
+        pivot_obj.style.background_gradient(cmap='Blues', axis=1, subset=cols_ordenadas_obj),
+        use_container_width=True
+    )
+
 st.markdown("---")
 
 # --- 7. COBERTURA REAL (BODEGAS ÚNICAS) ---
@@ -234,28 +278,23 @@ tab_cob_sem, tab_cob_dia, tab_frec = st.tabs([
 ])
 
 with tab_cob_sem:
-    # Bodegas únicas por semana por gestor
     pivot_unicas_sem = pd.pivot_table(
         df_valido, values='PDV', index='GESTOR', 
         columns='SEMANA_LABEL', aggfunc=lambda x: x.nunique(), fill_value=0
     )
-    # Ordenar columnas con la misma lógica de antes
     cols_unicas = sorted(pivot_unicas_sem.columns, key=lambda x: dict_map[x] if x in dict_map else "")
     pivot_unicas_sem = pivot_unicas_sem[cols_unicas]
     
-    # Calcular el total de bodegas únicas en todo el periodo filtrado
     total_unicas = df_valido.groupby('GESTOR')['PDV'].nunique()
-    pivot_unicas_sem['Total Únicas en Periodo'] = total_unicas
+    pivot_unicas_sem['Total Únicas (Acumulado del Mes)'] = total_unicas
     
     st.dataframe(
-        pivot_unicas_sem.style.background_gradient(cmap='Greens', axis=1, subset=cols_unicas),
+        pivot_unicas_sem.style.background_gradient(cmap='Reds_r', axis=1, subset=cols_unicas),
         use_container_width=True
     )
 
 with tab_cob_dia:
-    # Contar bodegas únicas por gestor y día
     unicas_dia_gestor = df_valido.groupby(['GESTOR', df_valido['FECHA DE VISITA'].dt.date])['PDV'].nunique().reset_index(name='Bodegas_Unicas')
-    # Promediar esos valores
     promedio_diario = unicas_dia_gestor.groupby('GESTOR')['Bodegas_Unicas'].mean().round(1).reset_index(name='Promedio de Bodegas Únicas por Día')
     
     fig_prom_dia = px.bar(
@@ -269,7 +308,6 @@ with tab_cob_dia:
 
 with tab_frec:
     col_mas, col_menos = st.columns(2)
-    # Top bodegas más y menos visitadas
     frecuencia_bodegas = df_valido.groupby(['NOMBRE PDV', 'GESTOR']).size().reset_index(name='Total de Visitas')
     frecuencia_bodegas = frecuencia_bodegas.sort_values('Total de Visitas', ascending=False)
     
@@ -281,7 +319,6 @@ with tab_frec:
     with col_menos:
         st.markdown("**🔽 Bodegas Menos Visitadas**")
         st.markdown("*(Solo registran 1 o muy pocas visitas)*")
-        # Mostrar el tail, pero ordenado para ver las que tienen 1
         st.dataframe(frecuencia_bodegas.tail(15).sort_values('Total de Visitas'), hide_index=True, use_container_width=True)
 
 st.markdown("---")
@@ -296,7 +333,7 @@ duplicados = df_base[df_base.duplicated(subset=['FECHA DE VISITA', 'GESTOR', 'NO
 if not duplicados.empty:
     st.warning(f"**Revisitas el mismo día:** Se detectaron **{len(duplicados)}** visitas donde el mismo Gestor visitó el mismo 'Nombre PDV' en el mismo día.", icon="⚠️")
     with st.expander("Ver detalle completo de visitas duplicadas"):
-        ver_dups = duplicados[['FECHA DE VISITA', 'GESTOR', 'NOMBRE PDV', 'HORA_INICIO', 'OBJETIVO_VISITA']].sort_values(['GESTOR', 'NOMBRE PDV'])
+        ver_dups = duplicados[['FECHA DE VISITA', 'GESTOR', 'NOMBRE PDV', 'HORA_INICIO', 'DURACION_MINUTOS', 'OBJETIVO_VISITA']].sort_values(['GESTOR', 'NOMBRE PDV'])
         ver_dups['FECHA DE VISITA'] = ver_dups['FECHA DE VISITA'].dt.strftime('%Y-%m-%d')
         st.dataframe(ver_dups, hide_index=True, use_container_width=True)
 else:
