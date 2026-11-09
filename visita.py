@@ -85,18 +85,19 @@ with st.sidebar:
     else:
         gestores_seleccionados = st.multiselect("Elegir Gestores:", options=todos_gestores, default=[])
 
-# Aplicar filtros
+# Aplicar filtros (df_base filtrado por gestor, df_baseline SIN filtro de gestor para promedios fijos)
 if len(fecha_rango) == 2:
     start_date, end_date = fecha_rango
-    mask = (
-        (df['GESTOR'].isin(gestores_seleccionados)) & 
-        (df['FECHA DE VISITA'].dt.date >= start_date) & 
-        (df['FECHA DE VISITA'].dt.date <= end_date)
-    )
-    df_base = df[mask]
+    mask_fecha = (df['FECHA DE VISITA'].dt.date >= start_date) & (df['FECHA DE VISITA'].dt.date <= end_date)
+    df_baseline_raw = df[mask_fecha] # Base para calcular el promedio de todo el equipo
+    mask = mask_fecha & (df['GESTOR'].isin(gestores_seleccionados))
+    df_base = df[mask] # Base para las tablas
 else:
+    df_baseline_raw = df.copy()
     df_base = df[df['GESTOR'].isin(gestores_seleccionados)]
 
+# Filtros de duración
+df_baseline = df_baseline_raw[df_baseline_raw['DURACION_MINUTOS'] >= min_duracion]
 df_valido = df_base[df_base['DURACION_MINUTOS'] >= min_duracion]
 df_descartado = df_base[df_base['DURACION_MINUTOS'] < min_duracion]
 
@@ -104,14 +105,22 @@ if df_valido.empty:
     st.warning("No hay datos para los filtros seleccionados.")
     st.stop()
 
-# --- 3. KPIs PRINCIPALES ---
+# --- 3. KPIs PRINCIPALES (AHORA CON PROMEDIOS) ---
 st.markdown("### 📊 Indicadores Clave de Rendimiento (KPIs)")
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
-col1.metric("Total Visitas Efectivas", f"{len(df_valido):,}".replace(',', '.'))
-col2.metric("Cobertura (Bodegas Únicas)", f"{df_valido['PDV'].nunique():,}".replace(',', '.'))
-col3.metric("Tiempo Medio en PDV", f"{df_valido['DURACION_MINUTOS'].mean():.0f} min")
-col4.metric(f"Visitas < {int(min_duracion)} min", f"{len(df_descartado):,}".replace(',', '.'), delta_color="inverse")
+# Calculos de Promedio (usando df_baseline para que no cambie al filtrar un solo gestor)
+bodegas_x_gestor = df_baseline.groupby('GESTOR')['PDV'].nunique()
+promedio_bodegas_gestor = bodegas_x_gestor.mean()
+
+bodegas_x_dia_gestor = df_baseline.groupby(['GESTOR', df_baseline['FECHA DE VISITA'].dt.date])['PDV'].nunique()
+promedio_bodegas_dia = bodegas_x_dia_gestor.mean()
+
+col1.metric("Visitas Efectivas", f"{len(df_valido):,}".replace(',', '.'))
+col2.metric("Bodegas Únicas (Total)", f"{df_valido['PDV'].nunique():,}".replace(',', '.'))
+col3.metric("Promedio Bodegas/Gestor", f"{promedio_bodegas_gestor:.0f}", help="Promedio de cobertura total por gestor (Fijo del equipo)")
+col4.metric("Promedio Bodegas/Día", f"{promedio_bodegas_dia:.0f}", help="Ritmo diario promedio de bodegas únicas por gestor (Fijo del equipo)")
+col5.metric(f"Visitas Descartadas", f"{len(df_descartado):,}".replace(',', '.'), help=f"Visitas menores a {int(min_duracion)} min", delta_color="inverse")
 
 st.markdown("---")
 
@@ -143,11 +152,7 @@ with tab_sem:
         title="Volumen de Visitas por Semana Exacta del Mes",
         color_discrete_sequence=['#1f77b4']
     )
-    fig_semana.update_traces(
-        textposition='outside',
-        textfont=dict(size=16, color='black'),
-        texttemplate='<b>%{text}</b>'
-    )
+    fig_semana.update_traces(textposition='outside', textfont=dict(size=16, color='black'), texttemplate='<b>%{text}</b>')
     fig_semana.update_layout(margin=dict(t=50))
     st.plotly_chart(fig_semana, use_container_width=True)
 
@@ -155,19 +160,11 @@ with tab_obj_sem:
     visitas_obj_semana = df_valido.groupby(['SEMANA_SORT_KEY', 'SEMANA_LABEL', 'OBJETIVO_VISITA']).size().reset_index(name='Visitas')
     visitas_obj_semana = visitas_obj_semana.sort_values('SEMANA_SORT_KEY')
     fig_obj_sem = px.bar(
-        visitas_obj_semana, 
-        x='SEMANA_LABEL', 
-        y='Visitas', 
-        color='OBJETIVO_VISITA', 
-        barmode='group',
-        text='Visitas',
-        title="Volumen de Visitas por Objetivo y Semana",
+        visitas_obj_semana, x='SEMANA_LABEL', y='Visitas', color='OBJETIVO_VISITA', barmode='group',
+        text='Visitas', title="Volumen de Visitas por Objetivo y Semana",
         color_discrete_sequence=px.colors.qualitative.Pastel
     )
-    fig_obj_sem.update_traces(
-        textposition='outside',
-        textfont=dict(size=12, color='black')
-    )
+    fig_obj_sem.update_traces(textposition='outside', textfont=dict(size=12, color='black'))
     fig_obj_sem.update_layout(margin=dict(t=50), xaxis_title="", legend_title_text="Objetivo")
     st.plotly_chart(fig_obj_sem, use_container_width=True)
 
@@ -183,10 +180,8 @@ with tab_dia:
 
 st.markdown("---")
 
-# --- 6. DESEMPEÑO POR GESTOR (CON 3 VISTAS) ---
+# --- 6. DESEMPEÑO POR GESTOR ---
 st.markdown("### 🏆 Desempeño y Productividad por Gestor")
-st.markdown("Selecciona si deseas comparar las últimas dos semanas registradas, ver el historial completo o desglosarlo por objetivo.")
-
 tab_comp, tab_hist, tab_obj_gest = st.tabs(["⚖️ Comparativa: Últimas 2 Semanas", "📅 Historial Completo", "🎯 Desglose Semanal por Objetivo"])
 
 semanas_ordenadas = sorted(df_valido['SEMANA_SORT_KEY'].unique())
@@ -211,10 +206,7 @@ with tab_comp:
         
         col_penultima = f'Semana 1: {lbl_pen}'
         df_comp.columns = ['Gestor', col_penultima, f'Semana 2: {lbl_ult}', 'Crecimiento / Caída']
-        
         promedio_penultima = df_comp[col_penultima].mean()
-        
-        st.info(f"El promedio de visitas en la **{col_penultima}** fue de **{promedio_penultima:.1f}** visitas por gestor. Los gestores por debajo de este promedio están resaltados en rojo suave.")
         
         def color_variacion(val):
             if isinstance(val, (int, float)):
@@ -233,101 +225,188 @@ with tab_comp:
             use_container_width=True, hide_index=True
         )
     else:
-        st.info("No hay suficientes semanas (mínimo 2) en el rango seleccionado para hacer una comparativa.")
+        st.info("No hay suficientes semanas para hacer una comparativa.")
 
 with tab_hist:
-    pivot_hist = pd.pivot_table(
-        df_valido, values='DURACION_MINUTOS', index='GESTOR', 
-        columns='SEMANA_LABEL', aggfunc='count', fill_value=0
-    )
-    
+    pivot_hist = pd.pivot_table(df_valido, values='DURACION_MINUTOS', index='GESTOR', columns='SEMANA_LABEL', aggfunc='count', fill_value=0)
     cols_ordenadas = sorted(pivot_hist.columns, key=lambda x: dict_map[x])
     pivot_hist = pivot_hist[cols_ordenadas]
     pivot_hist['Total General'] = pivot_hist.sum(axis=1)
-    
-    st.dataframe(
-        pivot_hist.style.background_gradient(cmap='Blues', axis=1, subset=cols_ordenadas),
-        use_container_width=True
-    )
+    st.dataframe(pivot_hist.style.background_gradient(cmap='Blues', axis=1, subset=cols_ordenadas), use_container_width=True)
 
 with tab_obj_gest:
-    pivot_obj = pd.pivot_table(
-        df_valido, values='DURACION_MINUTOS', index=['GESTOR', 'OBJETIVO_VISITA'], 
-        columns='SEMANA_LABEL', aggfunc='count', fill_value=0
-    )
-    
+    pivot_obj = pd.pivot_table(df_valido, values='DURACION_MINUTOS', index=['GESTOR', 'OBJETIVO_VISITA'], columns='SEMANA_LABEL', aggfunc='count', fill_value=0)
     cols_ordenadas_obj = sorted(pivot_obj.columns, key=lambda x: dict_map[x] if x in dict_map else "")
     pivot_obj = pivot_obj[cols_ordenadas_obj]
     pivot_obj['Total General'] = pivot_obj.sum(axis=1)
-    
-    st.dataframe(
-        pivot_obj.style.background_gradient(cmap='Blues', axis=1, subset=cols_ordenadas_obj),
-        use_container_width=True
-    )
+    st.dataframe(pivot_obj.style.background_gradient(cmap='Blues', axis=1, subset=cols_ordenadas_obj), use_container_width=True)
 
 st.markdown("---")
 
-# --- 7. COBERTURA REAL (BODEGAS ÚNICAS) ---
+# --- 7. COBERTURA REAL ---
 st.markdown("### 🏪 Cobertura Real: Bodegas Únicas y Frecuencia de Visitas")
-st.markdown("Análisis de cuántas bodegas DISTINTAS visita cada gestor para medir la cobertura territorial real frente a las visitas repetidas.")
-
-tab_cob_sem, tab_cob_dia, tab_frec = st.tabs([
-    "📅 Bodegas Únicas por Semana", 
-    "📆 Promedio Diario de Bodegas Únicas", 
-    "🔄 Bodegas Más y Menos Visitadas"
-])
+tab_cob_sem, tab_cob_dia, tab_frec = st.tabs(["📅 Bodegas Únicas por Semana", "📆 Promedio Diario de Bodegas Únicas", "🔄 Bodegas Más/Menos Visitadas"])
 
 with tab_cob_sem:
-    pivot_unicas_sem = pd.pivot_table(
-        df_valido, values='PDV', index='GESTOR', 
-        columns='SEMANA_LABEL', aggfunc=lambda x: x.nunique(), fill_value=0
-    )
+    pivot_unicas_sem = pd.pivot_table(df_valido, values='PDV', index='GESTOR', columns='SEMANA_LABEL', aggfunc=lambda x: x.nunique(), fill_value=0)
     cols_unicas = sorted(pivot_unicas_sem.columns, key=lambda x: dict_map[x] if x in dict_map else "")
     pivot_unicas_sem = pivot_unicas_sem[cols_unicas]
-    
     total_unicas = df_valido.groupby('GESTOR')['PDV'].nunique()
-    pivot_unicas_sem['Total Únicas (Acumulado del Mes)'] = total_unicas
-    
-    st.dataframe(
-        pivot_unicas_sem.style.background_gradient(cmap='Reds_r', axis=1, subset=cols_unicas),
-        use_container_width=True
-    )
+    pivot_unicas_sem['Total Únicas (Acumulado)'] = total_unicas
+    st.dataframe(pivot_unicas_sem.style.background_gradient(cmap='Reds_r', axis=1, subset=cols_unicas), use_container_width=True)
 
 with tab_cob_dia:
     unicas_dia_gestor = df_valido.groupby(['GESTOR', df_valido['FECHA DE VISITA'].dt.date])['PDV'].nunique().reset_index(name='Bodegas_Unicas')
-    promedio_diario = unicas_dia_gestor.groupby('GESTOR')['Bodegas_Unicas'].mean().round(1).reset_index(name='Promedio de Bodegas Únicas por Día')
-    
+    promedio_diario = unicas_dia_gestor.groupby('GESTOR')['Bodegas_Unicas'].mean().round(1).reset_index(name='Promedio Bodegas Únicas / Día')
     fig_prom_dia = px.bar(
-        promedio_diario.sort_values('Promedio de Bodegas Únicas por Día', ascending=True),
-        x='Promedio de Bodegas Únicas por Día', y='GESTOR', orientation='h',
-        title='Promedio de Bodegas Distintas que visita un Gestor al Día',
-        text='Promedio de Bodegas Únicas por Día', color='Promedio de Bodegas Únicas por Día', color_continuous_scale='Greens'
+        promedio_diario.sort_values('Promedio Bodegas Únicas / Día', ascending=True),
+        x='Promedio Bodegas Únicas / Día', y='GESTOR', orientation='h',
+        text='Promedio Bodegas Únicas / Día', color='Promedio Bodegas Únicas / Día', color_continuous_scale='Greens'
     )
     fig_prom_dia.update_traces(textposition='outside')
     st.plotly_chart(fig_prom_dia, use_container_width=True)
 
 with tab_frec:
     col_mas, col_menos = st.columns(2)
-    frecuencia_bodegas = df_valido.groupby(['NOMBRE PDV', 'GESTOR']).size().reset_index(name='Total de Visitas')
-    frecuencia_bodegas = frecuencia_bodegas.sort_values('Total de Visitas', ascending=False)
-    
+    frecuencia_bodegas = df_valido.groupby(['NOMBRE PDV', 'GESTOR']).size().reset_index(name='Total de Visitas').sort_values('Total de Visitas', ascending=False)
     with col_mas:
         st.markdown("**🔝 TOP 15 - Bodegas Más Visitadas**")
-        st.markdown("*(Útil para detectar excesos de visita a un mismo local)*")
         st.dataframe(frecuencia_bodegas.head(15), hide_index=True, use_container_width=True)
-        
     with col_menos:
         st.markdown("**🔽 Bodegas Menos Visitadas**")
-        st.markdown("*(Solo registran 1 o muy pocas visitas)*")
         st.dataframe(frecuencia_bodegas.tail(15).sort_values('Total de Visitas'), hide_index=True, use_container_width=True)
 
 st.markdown("---")
 
-# --- 8. AUDITORÍA Y ANOMALÍAS ---
+# --- 8. MATRIZ UNIFICADA COMPACTA (SOMBREADO POR DEBAJO DEL PROMEDIO) ---
+st.markdown("### 📊 Matriz Combinada: Visitas Totales vs Bodegas Únicas")
+st.markdown("Tabla consolidada. <br>🔴 *El sombreado rojo indica que ese gestor está por debajo del **promedio de esa columna** en esa semana.*", unsafe_allow_html=True)
+
+df_vis = df_valido.groupby(['GESTOR', 'SEMANA_LABEL']).size().reset_index(name='Visitas')
+df_uni = df_valido.groupby(['GESTOR', 'SEMANA_LABEL'])['PDV'].nunique().reset_index(name='Bodegas Únicas')
+df_merge = pd.merge(df_vis, df_uni, on=['GESTOR', 'SEMANA_LABEL'])
+
+pivot_unificado = df_merge.pivot(index='GESTOR', columns='SEMANA_LABEL', values=['Visitas', 'Bodegas Únicas']).fillna(0)
+pivot_unificado = pivot_unificado.swaplevel(axis=1).sort_index(axis=1)
+
+semanas_ordenadas_cols = sorted(pivot_unificado.columns.levels[0], key=lambda x: dict_map.get(x, ""))
+pivot_unificado = pivot_unificado[semanas_ordenadas_cols]
+
+def highlight_below_avg_matrix(s):
+    # s es cada columna de la matriz
+    promedio_col = s.mean()
+    # Si el valor es menor que el promedio de la columna, pinta de rojo
+    return ['background-color: #ffcccc; color: #900000;' if v < promedio_col else '' for v in s]
+
+# Aplicamos la función a nivel de columnas (axis=0)
+st.dataframe(pivot_unificado.style.apply(highlight_below_avg_matrix, axis=0).format("{:.0f}"), use_container_width=True)
+
+st.markdown("---")
+
+# --- 9. EL ANALISTA VIRTUAL: EVALUACIÓN FIJA ---
+st.markdown("### 🧠 Análisis Integral y Diagnóstico Automático")
+st.markdown("Clasificación de gestores basada en sus métricas frente a los **promedios fijos del equipo**.")
+
+# 1. Calculamos los promedios FIJOS del equipo (usando df_baseline, ignora el filtro visual de gestores)
+visitas_totales_base = df_baseline.groupby('GESTOR').size()
+unicas_totales_base = df_baseline.groupby('GESTOR')['PDV'].nunique()
+
+prom_equipo_visitas = visitas_totales_base.mean() if not visitas_totales_base.empty else 0
+prom_equipo_unicas = unicas_totales_base.mean() if not unicas_totales_base.empty else 0
+
+# Promedio diario FIJO del equipo
+dias_activos_base = df_baseline.groupby('GESTOR')['FECHA DE VISITA'].apply(lambda x: x.dt.date.nunique())
+df_diario_base = pd.DataFrame({'visitas': visitas_totales_base, 'dias': dias_activos_base})
+df_diario_base['vis_dia'] = df_diario_base['visitas'] / df_diario_base['dias']
+prom_equipo_diario = df_diario_base['vis_dia'].mean() if not df_diario_base.empty else 0
+
+# 2. Evaluamos a los gestores seleccionados actualmente (df_valido)
+gestores_stats = []
+for gestor in df_valido['GESTOR'].unique():
+    df_g = df_valido[df_valido['GESTOR'] == gestor]
+    
+    visitas_totales = len(df_g)
+    bodegas_unicas = df_g['PDV'].nunique()
+    dias_activos = df_g['FECHA DE VISITA'].dt.date.nunique()
+    
+    visitas_x_dia = visitas_totales / dias_activos if dias_activos > 0 else 0
+    unicas_x_dia = bodegas_unicas / dias_activos if dias_activos > 0 else 0
+    
+    df_g_base = df_base[df_base['GESTOR'] == gestor]
+    visitas_cortas = len(df_g_base[df_g_base['DURACION_MINUTOS'] < min_duracion])
+    
+    gestores_stats.append({
+        'Gestor': gestor,
+        'Días Trabajados': dias_activos,
+        'Visitas Totales': visitas_totales,
+        'Bodegas Únicas': bodegas_unicas,
+        'Visitas/Día': visitas_x_dia,
+        'Bod. Únicas/Día': unicas_x_dia,
+        'Visitas Descartadas': visitas_cortas
+    })
+
+df_eval = pd.DataFrame(gestores_stats)
+
+def clasificar_gestor(row):
+    # Ahora la regla compara siempre contra los promedios generales fijos
+    if row['Bodegas Únicas'] >= prom_equipo_unicas and row['Visitas Totales'] >= prom_equipo_visitas:
+        return '🌟 Bien (Excelente)'
+    elif row['Bodegas Únicas'] < (prom_equipo_unicas * 0.75) and row['Visitas Totales'] < (prom_equipo_visitas * 0.75):
+        return '🚨 Mal (Crítico)'
+    else:
+        return '⚠️ Regular (Seguimiento)'
+
+def generar_observacion(row):
+    obs = []
+    if row['Bodegas Únicas'] < prom_equipo_unicas and row['Visitas Totales'] >= prom_equipo_visitas:
+        obs.append("Alta productividad pero baja cobertura (muchas revisitas).")
+    if row['Bodegas Únicas'] < prom_equipo_unicas and row['Visitas Totales'] < prom_equipo_visitas:
+         obs.append("Volumen general por debajo del promedio del equipo.")
+    if row['Visitas/Día'] < (prom_equipo_diario * 0.75):
+        obs.append("Bajo volumen de visitas diarias.")
+    if row['Visitas Descartadas'] > 5:
+        obs.append("Alto volumen de visitas registradas como muy cortas.")
+    if row['Bodegas Únicas'] >= prom_equipo_unicas and row['Visitas/Día'] >= prom_equipo_diario:
+        obs.append("Excelente ritmo de visita y expansión territorial.")
+    
+    if not obs:
+        if 'Bien' in row['Estado']:
+            return "Buen desempeño consistente frente al promedio del equipo."
+        elif 'Mal' in row['Estado']:
+            return "Requiere revisión urgente de su productividad territorial."
+        else:
+            return "Rendimiento regular, en el límite del promedio esperado."
+            
+    return " | ".join(obs)
+
+if not df_eval.empty:
+    df_eval['Estado'] = df_eval.apply(clasificar_gestor, axis=1)
+    df_eval['Diagnóstico Automático'] = df_eval.apply(generar_observacion, axis=1)
+
+    df_eval = df_eval.sort_values(by=['Estado', 'Visitas Totales'], ascending=[False, False]).reset_index(drop=True)
+
+    def color_estado(val):
+        if 'Bien' in val: return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+        if 'Regular' in val: return 'background-color: #fff3cd; color: #856404; font-weight: bold;'
+        if 'Mal' in val: return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+        return ''
+
+    format_dict = {'Visitas/Día': "{:.1f}", 'Bod. Únicas/Día': "{:.1f}"}
+
+    st.dataframe(
+        df_eval.style.map(color_estado, subset=['Estado']).format(format_dict),
+        use_container_width=True, hide_index=True
+    )
+else:
+    st.info("No hay datos suficientes para evaluar a los gestores seleccionados.")
+
+st.markdown("---")
+
+# --- 10. AUDITORÍA Y ANOMALÍAS ---
 st.markdown("### 🚨 Auditoría y Anomalías")
 st.markdown("Revisión de alertas tempranas sobre posibles malas prácticas o inconsistencias en los registros de visita.")
 
-st.info(f"**Visitas de duración crítica (< {int(min_duracion)} min):** Se detectaron **{len(df_descartado)}** registros que no cumplen el tiempo mínimo establecido. Revisa la tabla de KPIs para el impacto general.", icon="⏱️")
+st.info(f"**Visitas de duración crítica (< {int(min_duracion)} min):** Se detectaron **{len(df_descartado)}** registros que no cumplen el tiempo mínimo establecido. Esto corresponde a la métrica de 'Visitas Descartadas'.", icon="⏱️")
 
 duplicados = df_base[df_base.duplicated(subset=['FECHA DE VISITA', 'GESTOR', 'NOMBRE PDV'], keep=False)]
 if not duplicados.empty:
